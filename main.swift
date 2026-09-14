@@ -436,8 +436,6 @@ final class MetalChromaFilter: ChromaFilter {
                                                              width: chromaWidth,
                                                              height: chromaHeight,
                                                              attributes: usage)
-        _ = lumaHolder
-        _ = chromaHolder
 
         guard let guideTexture = guideTexture, let midTexture = midTexture,
               let commandBuffer = commandQueue.makeCommandBuffer() else {
@@ -469,6 +467,10 @@ final class MetalChromaFilter: ChromaFilter {
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        // The textures are owned by their CVMetalTexture wrappers; keep both
+        // alive until the GPU has definitely finished reading them.
+        withExtendedLifetime(lumaHolder) {}
+        withExtendedLifetime(chromaHolder) {}
         if let error = commandBuffer.error {
             throw DefringeError("Metal: command buffer failed: \(error)")
         }
@@ -774,8 +776,18 @@ final class HEVCWriter {
             writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
             input = newInput
         }
-        guard let input = input, input.isReadyForMoreMediaData else {
-            throw DefringeError("AVAssetWriterInput is not ready for more media data")
+        guard let input = input else {
+            throw DefringeError("AVAssetWriterInput does not exist yet")
+        }
+        // With a passthrough writer isReadyForMoreMediaData can go false while
+        // the writer drains to disk; wait for it instead of dropping the frame.
+        var waited = 0.0
+        while !input.isReadyForMoreMediaData {
+            if waited >= 30.0 {
+                throw DefringeError("AVAssetWriterInput stayed busy for 30s")
+            }
+            Thread.sleep(forTimeInterval: 0.002)
+            waited += 0.002
         }
         guard input.append(sampleBuffer) else {
             throw DefringeError("AVAssetWriterInput.append failed: \(String(describing: writer.error))")
