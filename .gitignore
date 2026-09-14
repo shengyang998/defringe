@@ -1,0 +1,13 @@
+# Build output
+/defringe
+
+# Python bytecode from the check scripts
+__pycache__/
+*.pyc
+
+# Test artifacts: synthetic source, filtered output, rendered comparisons.
+# Regenerate with test/make_synthetic_source.sh / test/verify.sh.
+test/out/
+
+# macOS
+.DS_Store
