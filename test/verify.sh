@@ -98,6 +98,9 @@ print("SUCCESS: temporal sub-layer sample groups present (tscl/tsas)" if ok
       else "FAIL: tscl/tsas missing — the lock-screen slow-motion ramp needs them")
 sys.exit(0 if ok else 1)
 PY
+
+# Colour tags must survive the re-encode (sRGB aerials are the reason).
+python3 "$CHECKS/check_color.py" "$SOURCE" "$OUTPUT" || CONTRACT_FAILURES=$((CONTRACT_FAILURES+1))
 say "container contract failures: $CONTRACT_FAILURES"
 
 step "5/6 frame alignment (luma MAD, zero shift vs best shift)"

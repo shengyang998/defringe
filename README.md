@@ -49,9 +49,10 @@ Backends:
 | item | required |
 |---|---|
 | codec | HEVC Main 10 (`kVTProfileLevel_HEVC_Main10_AutoLevel`) |
-| pixel format | `yuv420p10le` (`kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange`), tv range, BT.709 primaries/transfer/matrix |
+| pixel format | `yuv420p10le` (`kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange`), tv range |
 | frame rate & duration | identical to the source (aerial: 240 fps, whole frames) |
 | temporal sub-layers | `tscl`/`tsas` sample groups present |
+| colour tags | primaries / transfer function / YCbCr matrix copied from the source; BT.709 only when the source does not carry them |
 
 **The temporal sub-layer requirement is the easy one to miss.** Apple's aerials
 carry HEVC temporal sub-layers; the lock-screen slow-motion ramp uses them, and
@@ -82,6 +83,18 @@ The writer input can only be created once the first frame has come back from VT
 lazily inside the encode callback; the writer is started and the session opened
 at the first sample's presentation time. PTS and duration are passed through
 untouched.
+
+**Colour tags are passed through, not assumed.** The sRGB aerials (filenames
+containing `_sRGB_`, `color_transfer=iec61966-2-1`) are the reason. With the
+encoder session hardcoded to BT.709, VideoToolbox sees the sRGB attachments on
+the decoded pixel buffers, converts the image to BT.709 and writes a BT.709
+tag: a colour-managed pipeline then renders the result about 10/255 darker
+than the original (measured −8.8/255, and the mean luma 30 codes of 1024 lower,
+on the synthetic scene). `defringe` reads
+`kCMFormatDescriptionExtension_ColorPrimaries`,
+`kCMFormatDescriptionExtension_TransferFunction` and
+`kCMFormatDescriptionExtension_YCbCrMatrix` from the source track and sets the
+encoder to the same values; BT.709 is used only when the source says nothing.
 
 One storage detail worth knowing if you touch the code:
 `420YpCbCr10BiPlanarVideoRange` keeps the 10-bit code left-aligned in a 16-bit
@@ -138,6 +151,12 @@ encoded at a low bit rate to create the chroma ringing.
 
     test/verify.sh                 # reuse test/out/source.mov
     test/verify.sh --regenerate    # re-encode the source first
+    test/verify_srgb.sh            # the same run on the sRGB-tagged source
+
+The sRGB run is the regression test for the colour-tag passthrough: the source
+is tagged `iec61966-2-1` with the `hevc_metadata` bitstream filter (applied
+after the encode, because `hevc_videotoolbox` writes no transfer/primaries
+VUI), and the output must keep that tag and the same code values.
 
 What it checks:
 
@@ -148,6 +167,8 @@ What it checks:
   search over ±20 px to prove zero really is the best shift;
 * per-region chroma means and high-frequency energy (sky, tower, cables, water,
   deck);
+* colour tags: the output must carry the source's primaries/transfer/matrix and
+  its code values must survive the re-encode (no hidden transfer conversion);
 * ×10 amplified difference maps: smooth regions must be black, only edges may
   light up;
 * flip (0.6 s alternation) and stacked comparisons of crops.
@@ -178,6 +199,8 @@ on an M4 Pro, which reaches roughly 56 fps.)
 | ffprobe | Main 10 / yuv420p10le / tv / bt709 / 4096x2160 / 240 fps / 10.000000 s / 2400 frames — identical to source |
 | sample groups | `tscl` 2, `tsas` 2, `sgpd` 3, `cslg` 1 |
 | frame alignment | worst zero-shift MAD 0.367/255; best shift (0, 0) at every sampled time |
+| colour tags, untagged source | falls back to BT.709; code-value delta +0.014/255 |
+| colour tags, sRGB source | output keeps `iec61966-2-1`; code-value delta +0.018/255 (pre-fix: retagged BT.709, −8.8/255 and mean luma 30/1024 lower) |
 | sky ΔCb/ΔCr | −0.46 / −0.48 (10-bit codes) |
 | tower ΔCb/ΔCr | −0.41 / −0.13 |
 | cables ΔCb/ΔCr | −0.36 / −0.56 |

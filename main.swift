@@ -117,6 +117,12 @@ struct SourceInfo {
     var duration: CMTime
     var transform: CGAffineTransform
     var estimatedFrames: Int
+    /// Colour tags from the source track's format description, passed through
+    /// to the encoder so the output carries the same colour space. nil means
+    /// the source does not say; BT.709 is used then.
+    var colorPrimaries: String?
+    var transferFunction: String?
+    var yCbCrMatrix: String?
 }
 
 func probeSource(_ asset: AVAsset) throws -> (AVAssetTrack, SourceInfo) {
@@ -128,6 +134,15 @@ func probeSource(_ asset: AVAsset) throws -> (AVAssetTrack, SourceInfo) {
     }
     let format = rawFormat as! CMVideoFormatDescription
     let dimensions = CMVideoFormatDescriptionGetDimensions(format)
+
+    // Carry the source's colour tags into the encode. Hardcoding BT.709 writes
+    // the wrong transfer function for sRGB aerials (the ones whose filenames
+    // contain "_sRGB_"): a colour-managed pipeline then renders the output
+    // roughly 10/255 off in brightness, i.e. visibly darker than the original.
+    let extensions = CMFormatDescriptionGetExtensions(format) as? [String: Any] ?? [:]
+    let colorPrimaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String
+    let transferFunction = extensions[kCMFormatDescriptionExtension_TransferFunction as String] as? String
+    let yCbCrMatrix = extensions[kCMFormatDescriptionExtension_YCbCrMatrix as String] as? String
 
     var frameRate = Double(track.nominalFrameRate)
     if !(frameRate > 0) {
@@ -149,7 +164,10 @@ func probeSource(_ asset: AVAsset) throws -> (AVAssetTrack, SourceInfo) {
         frameRate: frameRate,
         duration: duration,
         transform: track.preferredTransform,
-        estimatedFrames: estimatedFrames
+        estimatedFrames: estimatedFrames,
+        colorPrimaries: colorPrimaries,
+        transferFunction: transferFunction,
+        yCbCrMatrix: yCbCrMatrix
     )
     return (track, info)
 }
@@ -572,6 +590,9 @@ final class HEVCWriter {
     private let bitrateMbps: Double
     private let transform: CGAffineTransform
     private let mediaTimeScale: CMTimeScale
+    private let sourceColorPrimaries: String?
+    private let sourceTransferFunction: String?
+    private let sourceYCbCrMatrix: String?
 
     private let writer: AVAssetWriter
     private var session: VTCompressionSession?
@@ -587,7 +608,10 @@ final class HEVCWriter {
          height: Int,
          frameRate: Double,
          bitrateMbps: Double,
-         transform: CGAffineTransform) throws {
+         transform: CGAffineTransform,
+         colorPrimaries: String?,
+         transferFunction: String?,
+         yCbCrMatrix: String?) throws {
         self.outputURL = outputURL
         self.width = width
         self.height = height
@@ -595,6 +619,9 @@ final class HEVCWriter {
         self.bitrateMbps = bitrateMbps
         self.transform = transform
         self.mediaTimeScale = CMTimeScale(max(600.0, (frameRate * 100.0).rounded()))
+        self.sourceColorPrimaries = colorPrimaries
+        self.sourceTransferFunction = transferFunction
+        self.sourceYCbCrMatrix = yCbCrMatrix
 
         try? FileManager.default.removeItem(at: outputURL)
         do {
@@ -672,15 +699,20 @@ final class HEVCWriter {
         try setProperty(kVTCompressionPropertyKey_AverageBitRate,
                         NSNumber(value: bitrateMbps * 1_000_000.0),
                         required: true, "AverageBitRate")
-        try setProperty(kVTCompressionPropertyKey_ColorPrimaries,
-                        kCVImageBufferColorPrimaries_ITU_R_709_2,
-                        required: false, "ColorPrimaries BT.709")
-        try setProperty(kVTCompressionPropertyKey_TransferFunction,
-                        kCVImageBufferTransferFunction_ITU_R_709_2,
-                        required: false, "TransferFunction BT.709")
-        try setProperty(kVTCompressionPropertyKey_YCbCrMatrix,
-                        kCVImageBufferYCbCrMatrix_ITU_R_709_2,
-                        required: false, "YCbCrMatrix BT.709")
+        // Colour: pass the source's tags through; fall back to BT.709 only when
+        // the source does not carry them. This is what keeps sRGB aerials sRGB.
+        let primaries = sourceColorPrimaries ?? (kCVImageBufferColorPrimaries_ITU_R_709_2 as String)
+        let transfer = sourceTransferFunction ?? (kCVImageBufferTransferFunction_ITU_R_709_2 as String)
+        let matrix = sourceYCbCrMatrix ?? (kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String)
+        try setProperty(kVTCompressionPropertyKey_ColorPrimaries, primaries as CFString,
+                        required: false,
+                        "ColorPrimaries \(primaries)\(sourceColorPrimaries == nil ? " (BT.709 fallback)" : "")")
+        try setProperty(kVTCompressionPropertyKey_TransferFunction, transfer as CFString,
+                        required: false,
+                        "TransferFunction \(transfer)\(sourceTransferFunction == nil ? " (BT.709 fallback)" : "")")
+        try setProperty(kVTCompressionPropertyKey_YCbCrMatrix, matrix as CFString,
+                        required: false,
+                        "YCbCrMatrix \(matrix)\(sourceYCbCrMatrix == nil ? " (BT.709 fallback)" : "")")
 
         VTCompressionSessionPrepareToEncodeFrames(session)
 
@@ -859,13 +891,17 @@ func runDefringe(_ options: Options) throws {
         info.width, info.height, info.frameRate, info.estimatedFrames,
         info.duration.seconds, options.bitrateMbps, options.sigma, options.rangeSigma,
         filter.name, info.frameRate / 2.0))
+    logLine("defringe: colour: primaries \(info.colorPrimaries ?? "ITU_R_709_2 (fallback)") | transfer \(info.transferFunction ?? "ITU_R_709_2 (fallback)") | matrix \(info.yCbCrMatrix ?? "ITU_R_709_2 (fallback)")")
 
     let writer = try HEVCWriter(outputURL: options.output,
                                 width: info.width,
                                 height: info.height,
                                 frameRate: info.frameRate,
                                 bitrateMbps: options.bitrateMbps,
-                                transform: info.transform)
+                                transform: info.transform,
+                                colorPrimaries: info.colorPrimaries,
+                                transferFunction: info.transferFunction,
+                                yCbCrMatrix: info.yCbCrMatrix)
     try writer.start()
 
     let (reader, readerOutput) = try makeReader(asset: asset, track: track)
