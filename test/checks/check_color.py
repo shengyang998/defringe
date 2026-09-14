@@ -3,17 +3,20 @@
 
 The output must carry the source's colour primaries, transfer function and
 YCbCr matrix; BT.709 is only a fallback for sources that do not say. The sRGB
-aerials (filenames containing "_sRGB_", transfer iec61966-2-1) are the reason
-this matters: an output wrongly retagged BT.709 renders about 10/255 off in
-brightness through a colour-managed pipeline.
+aerials (filenames containing "_sRGB_", transfer iec61966-2-1) are the reason:
+with the session hardcoded to BT.709, VideoToolbox converted the pixel data
+from the buffers' sRGB attachments into BT.709 — an extra transfer-function
+round trip, and metadata that disagreed with the source.
 
-The second half measures that: source and output frames are interpreted with
-**the source's** transfer function (the tags are asserted separately above) and
-rendered to sRGB display codes. Code values must survive the re-encode, so the
-delta stays at re-encode noise. The old hardcoded-BT.709 version failed here
-too: VideoToolbox saw sRGB attachments on the pixel buffers next to a BT.709
-session and actually converted the luma, so the output came out about 10/255
-darker than the source (measured -8.8/255 on the synthetic scene).
+The second half is a round-trip detector, not a visibility metric. Source and
+output are interpreted with the source's transfer (the tags are asserted
+separately above), so a transfer conversion inside the encoder shows up as a
+code-value delta. Treating that delta as "the output looks ~10/255 darker" is a
+measurement trap: ffmpeg converts the YCbCr matrix but not the transfer curve
+when comparing raw planes, while the system colour-management path
+(AVAssetImageGenerator -> CGImage -> sRGB) puts the old and the new output
+within 0.3/255 of each other. What the passthrough buys is the skipped round
+trip and metadata identical to the source.
 
 Usage: check_color.py <source.mov> <output.mov> [times...]
 """
@@ -103,11 +106,12 @@ def main(source, output, times):
         output_mean = display_luma_mean(output, time_seconds, transfer)
         delta = output_mean - source_mean
         worst = max(worst, abs(delta))
-        print("t=%.1fs code-value delta under the source transfer (output - source): %+.3f/255"
-              % (time_seconds, delta))
+        print("t=%.1fs code-value delta under the source transfer: %+.3f/255 "
+              "[round-trip detector, not a visibility metric]" % (time_seconds, delta))
     if worst > MAX_DISPLAY_DELTA:
-        print("FAIL: output differs by %.3f/255 (limit %.1f) — the colour either was "
-              "converted or is interpreted differently" % (worst, MAX_DISPLAY_DELTA))
+        print("FAIL: code values differ by %.3f/255 (limit %.1f) — the encoder performed "
+              "a transfer-function conversion instead of passing the pixels through"
+              % (worst, MAX_DISPLAY_DELTA))
         failures += 1
     else:
         print("SUCCESS: output code values match the source within %.3f/255" % worst)

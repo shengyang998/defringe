@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Same end-to-end verification as verify.sh, but against the sRGB-tagged
-# stand-in source. This is the regression test for colour-tag passthrough:
-# an output retagged BT.709 instead of iec61966-2-1 renders about 10/255 off
-# in brightness through a colour-managed pipeline.
+# stand-in source. This is the regression test for colour-tag passthrough: the
+# output must keep transfer=iec61966-2-1 and must not pick up an extra
+# transfer-function round trip. What the passthrough buys is the skipped round
+# trip and metadata identical to the source — not a visible brightness
+# difference (that claim was a measurement trap; see README).
 #
 # Usage: test/verify_srgb.sh [--regenerate]
 set -euo pipefail

@@ -85,16 +85,18 @@ at the first sample's presentation time. PTS and duration are passed through
 untouched.
 
 **Colour tags are passed through, not assumed.** The sRGB aerials (filenames
-containing `_sRGB_`, `color_transfer=iec61966-2-1`) are the reason. With the
-encoder session hardcoded to BT.709, VideoToolbox sees the sRGB attachments on
-the decoded pixel buffers, converts the image to BT.709 and writes a BT.709
-tag: a colour-managed pipeline then renders the result about 10/255 darker
-than the original (measured −8.8/255, and the mean luma 30 codes of 1024 lower,
-on the synthetic scene). `defringe` reads
+containing `_sRGB_`, `color_transfer=iec61966-2-1`) are the reason: with the
+encoder session hardcoded to BT.709, VideoToolbox converts the pixel data from
+the buffers' sRGB attachments into BT.709 — an extra transfer-function round
+trip, and metadata that disagrees with the source. `defringe` reads
 `kCMFormatDescriptionExtension_ColorPrimaries`,
 `kCMFormatDescriptionExtension_TransferFunction` and
 `kCMFormatDescriptionExtension_YCbCrMatrix` from the source track and sets the
 encoder to the same values; BT.709 is used only when the source says nothing.
+What this buys is the skipped round trip and metadata identical to the source —
+not a visible brightness fix: through the system colour-management path
+(AVAssetImageGenerator → CGImage → sRGB) the old and the new output are within
+0.3/255 of each other.
 
 One storage detail worth knowing if you touch the code:
 `420YpCbCr10BiPlanarVideoRange` keeps the 10-bit code left-aligned in a 16-bit
@@ -167,13 +169,14 @@ What it checks:
   search over ±20 px to prove zero really is the best shift;
 * per-region chroma means and high-frequency energy (sky, tower, cables, water,
   deck);
-* colour tags: the output must carry the source's primaries/transfer/matrix and
-  its code values must survive the re-encode (no hidden transfer conversion);
+* colour tags: the output must carry the source's primaries/transfer/matrix, and
+  the code-value check acts as a round-trip detector (it is not a visibility
+  metric);
 * ×10 amplified difference maps: smooth regions must be black, only edges may
   light up;
 * flip (0.6 s alternation) and stacked comparisons of crops.
 
-Two measurement traps the checks deliberately avoid:
+Three measurement traps the checks deliberately avoid:
 
 * **Side-by-side crops of the same gradient are an illusion machine** — the seam
   itself reads as a colour step. Use the flip GIF, the stacked crop whose seam
@@ -183,6 +186,13 @@ Two measurement traps the checks deliberately avoid:
   10-second excerpt can report a duration slightly over 10 s and an odd
   `avg_frame_rate` (e.g. 24040/101). That is not a bug and must not be "fixed"
   in the tool; only a full-file run is exact.
+* **Comparing raw code values between two files that carry different transfer
+  tags.** ffmpeg converts the YCbCr matrix but not the transfer curve, so an
+  sRGB source and a BT.709-tagged output differ by ~10 code values in the
+  planes while the system colour-management path (AVAssetImageGenerator →
+  CGImage → sRGB) renders them within 0.3/255 of each other. Judge colour
+  through the tags or through system colour management, never from raw planes
+  across a tag change; the delta is only useful as a round-trip detector.
 
 Also note that aggregate "chroma high-frequency energy" counts the real colour
 of thin structures as high frequency. It is useful for comparing against a plain
@@ -200,7 +210,7 @@ on an M4 Pro, which reaches roughly 56 fps.)
 | sample groups | `tscl` 2, `tsas` 2, `sgpd` 3, `cslg` 1 |
 | frame alignment | worst zero-shift MAD 0.367/255; best shift (0, 0) at every sampled time |
 | colour tags, untagged source | falls back to BT.709; code-value delta +0.014/255 |
-| colour tags, sRGB source | output keeps `iec61966-2-1`; code-value delta +0.018/255 (pre-fix: retagged BT.709, −8.8/255 and mean luma 30/1024 lower) |
+| colour tags, sRGB source | output keeps `iec61966-2-1`; code-value delta +0.018/255 (pre-fix: retagged BT.709 plus a transfer round trip — the delta is a round-trip detector, not a visibility metric; see the traps above) |
 | sky ΔCb/ΔCr | −0.46 / −0.48 (10-bit codes) |
 | tower ΔCb/ΔCr | −0.41 / −0.13 |
 | cables ΔCb/ΔCr | −0.36 / −0.56 |

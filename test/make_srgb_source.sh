@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Build the 10 s sRGB-tagged stand-in source (regression fixture for the
-# colour-tag passthrough bug: a tool that hardcodes BT.709 writes the wrong
-# transfer function for these files, which shows up as roughly 10/255 of
-# brightness error once a colour-managed pipeline renders them).
+# colour-tag passthrough: with the encoder session hardcoded to BT.709,
+# VideoToolbox converts these files from sRGB into BT.709 — an extra transfer
+# round trip and metadata that no longer matches the source. The code-value
+# delta that shows up is a round-trip detector, not a brightness measurement;
+# through the system colour-management path the difference is ~0.3/255).
 #
 # hevc_videotoolbox writes no transfer/primaries VUI, so the tag is applied
 # afterwards with the hevc_metadata bitstream filter over a stream copy:

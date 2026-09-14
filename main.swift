@@ -135,10 +135,15 @@ func probeSource(_ asset: AVAsset) throws -> (AVAssetTrack, SourceInfo) {
     let format = rawFormat as! CMVideoFormatDescription
     let dimensions = CMVideoFormatDescriptionGetDimensions(format)
 
-    // Carry the source's colour tags into the encode. Hardcoding BT.709 writes
-    // the wrong transfer function for sRGB aerials (the ones whose filenames
-    // contain "_sRGB_"): a colour-managed pipeline then renders the output
-    // roughly 10/255 off in brightness, i.e. visibly darker than the original.
+    // Carry the source's colour tags into the encode. Hardcoding BT.709 made
+    // VideoToolbox convert the pixel data of sRGB aerials (filenames containing
+    // "_sRGB_") from the buffers' colour space into BT.709: an extra
+    // transfer-function round trip, and metadata that disagreed with the
+    // source. (Comparing raw code values across two transfer tags exaggerates
+    // that — ffmpeg converts the matrix but not the transfer curve; through the
+    // system colour-management path old and new output are within 0.3/255. The
+    // passthrough is about skipping the round trip and keeping the metadata
+    // identical, not about a visible brightness bug.)
     let extensions = CMFormatDescriptionGetExtensions(format) as? [String: Any] ?? [:]
     let colorPrimaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String
     let transferFunction = extensions[kCMFormatDescriptionExtension_TransferFunction as String] as? String
